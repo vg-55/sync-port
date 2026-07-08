@@ -3,38 +3,43 @@ set -euo pipefail
 
 # ============================================================
 # sync-ports.sh — Periodically transfer port scan results to
-#                 the main VPS via password-based SCP (sshpass).
+#                 the main VPS via SCP.
+#
+# Supports both SSH key auth (recommended) and password auth.
 # ============================================================
 #
-# Usage:
-#   ./sync-ports.sh -f <file> -h <host> -u <user> -p <pass> [-r <remote_name>] [-d <remote_dir>] [-i <interval_sec>]
+# All options can be passed via CLI flags OR environment variables:
 #
-#   -f   Path to the port-scan file to transfer
-#   -h   Main VPS IP / hostname
-#   -u   SSH username on the main VPS
-#   -p   SSH password (no SSH key required)
-#   -r   Remote filename (default: same as local filename)
-#        Useful to give each node a unique name, e.g. -r node1-ports.txt
-#   -d   Remote destination directory (default: ~/ports/)
-#   -i   Transfer interval in seconds (default: 600 = 10 min)
-#   -1   One-shot mode — transfer once and exit
+#   CLI Flag  | Env Variable      | Description
+#   ----------|-------------------|------------------------------
+#   -f        | SYNC_FILE         | Path to port-scan file
+#   -h        | SYNC_HOST         | Main VPS IP / hostname
+#   -u        | SYNC_USER         | SSH username
+#   -p        | SYNC_PASSWORD     | SSH password (optional if using keys)
+#   -k        | SYNC_SSH_KEY      | Path to SSH private key (optional)
+#   -r        | SYNC_REMOTE_NAME  | Remote filename
+#   -d        | SYNC_REMOTE_DIR   | Remote destination dir (default: ~/ports/)
+#   -i        | SYNC_INTERVAL     | Transfer interval in seconds (default: 600)
+#   -1        | —                 | One-shot mode — transfer once and exit
 #
 # Examples:
-#   # Transfer every 10 minutes (same name on both ends)
-#   ./sync-ports.sh -f /tmp/ports.txt -h 10.0.0.1 -u root -p 'mypass'
+#   # Using SSH key (most secure — no password anywhere)
+#   ./sync-ports.sh -f /tmp/ports.txt -h 10.0.0.1 -k ~/.ssh/id_rsa -r node1-ports.txt
 #
-#   # Transfer with a different remote name (node1's results)
+#   # Using password (password passed on CLI — visible in ps output!)
 #   ./sync-ports.sh -f /tmp/ports.txt -h 10.0.0.1 -u root -p 'mypass' -r node1-ports.txt
+#
+#   # Using env vars (nothing on CLI, safe with systemd EnvironmentFile)
+#   export SYNC_FILE=/tmp/ports.txt SYNC_HOST=10.0.0.1 SYNC_USER=root
+#   export SYNC_PASSWORD='mypass'
+#   ./sync-ports.sh
 #
 #   # One-shot transfer
 #   ./sync-ports.sh -f /tmp/ports.txt -h 10.0.0.1 -u root -p 'mypass' -1
 #
-#   # Custom interval (5 min) + custom remote dir
-#   ./sync-ports.sh -f /tmp/ports.txt -h 10.0.0.1 -u root -p 'mypass' -d /var/scans/ -i 300
-#
-# Requirements on the scanning machine:
-#   - sshpass must be installed (brew install sshpass / apt install sshpass)
-#   - scp must be available
+# Requirements:
+#   - For password auth: sshpass must be installed
+#   - For key auth:     just openssh-client (no extra deps)
 # ============================================================
 
 usage() {
@@ -42,19 +47,25 @@ usage() {
     exit 0
 }
 
-# --- defaults ---
-REMOTE_DIR="~/ports/"
-INTERVAL=600          # 10 minutes
+# --- defaults (env vars override) ---
+FILE="${SYNC_FILE:-}"
+HOST="${SYNC_HOST:-}"
+USER="${SYNC_USER:-root}"
+PASSWORD="${SYNC_PASSWORD:-}"
+SSH_KEY="${SYNC_SSH_KEY:-}"
+REMOTE_DIR="${SYNC_REMOTE_DIR:-~/ports/}"
+INTERVAL="${SYNC_INTERVAL:-600}"
 ONESHOT=false
-REMOTE_NAME=""         # defaults to local filename if not set
+REMOTE_NAME="${SYNC_REMOTE_NAME:-}"
 
-# --- parse args ---
-while getopts "f:h:u:p:r:d:i:1" opt; do
+# --- parse CLI args (override env vars) ---
+while getopts "f:h:u:p:k:r:d:i:1" opt; do
     case "$opt" in
         f) FILE="$OPTARG" ;;
         h) HOST="$OPTARG" ;;
         u) USER="$OPTARG" ;;
         p) PASSWORD="$OPTARG" ;;
+        k) SSH_KEY="$OPTARG" ;;
         r) REMOTE_NAME="$OPTARG" ;;
         d) REMOTE_DIR="$OPTARG" ;;
         i) INTERVAL="$OPTARG" ;;
@@ -64,8 +75,9 @@ while getopts "f:h:u:p:r:d:i:1" opt; do
 done
 
 # --- validate required ---
-if [[ -z "${FILE:-}" || -z "${HOST:-}" || -z "${USER:-}" || -z "${PASSWORD:-}" ]]; then
-    echo "[!] Missing required arguments (-f, -h, -u, -p)."
+if [[ -z "${FILE:-}" || -z "${HOST:-}" ]]; then
+    echo "[!] Missing required arguments: -f (file) and -h (host) are required."
+    echo "    Use -f/-h flags or set SYNC_FILE / SYNC_HOST env vars."
     echo ""
     usage
 fi
@@ -75,37 +87,82 @@ if [[ ! -f "$FILE" ]]; then
     exit 1
 fi
 
-if ! command -v sshpass &>/dev/null; then
-    echo "[!] 'sshpass' is not installed. Install it first:"
-    echo "    macOS:  brew install hudochenkov/sshpass/sshpass"
-    echo "    Linux:  sudo apt install sshpass"
-    exit 1
+# Determine auth mode
+if [[ -n "${SSH_KEY:-}" ]]; then
+    AUTH_MODE="key"
+    echo "[i] Using SSH key auth: $SSH_KEY"
+elif [[ -n "${PASSWORD:-}" ]]; then
+    AUTH_MODE="password"
+    if ! command -v sshpass &>/dev/null; then
+        echo "[!] 'sshpass' is not installed. Install it first:"
+        echo "    macOS:  brew install hudochenkov/sshpass/sshpass"
+        echo "    Linux:  sudo apt install sshpass"
+        echo ""
+        echo "    Or use SSH key auth instead: -k ~/.ssh/id_rsa"
+        exit 1
+    fi
+else
+    # Try default SSH key
+    for key in "${HOME}/.ssh/id_ed25519" "${HOME}/.ssh/id_rsa"; do
+        if [[ -f "$key" ]]; then
+            SSH_KEY="$key"
+            AUTH_MODE="key"
+            echo "[i] Auto-detected SSH key: $SSH_KEY"
+            break
+        fi
+    done
+    if [[ "${AUTH_MODE:-}" != "key" ]]; then
+        echo "[!] No auth method configured."
+        echo "    Provide -p <password> for password auth, or"
+        echo "    Provide -k <key_path> for SSH key auth, or"
+        echo "    Set SYNC_PASSWORD / SYNC_SSH_KEY env var."
+        exit 1
+    fi
 fi
 
 # --- Ensure remote directory exists ---
 ensure_remote_dir() {
-    sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        "${USER}@${HOST}" "mkdir -p ${REMOTE_DIR}" 2>/dev/null || true
+    local ssh_cmd
+    ssh_cmd="${USER}@${HOST}"
+
+    if [[ "$AUTH_MODE" == "key" ]]; then
+        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "$ssh_cmd" "mkdir -p ${REMOTE_DIR}" 2>/dev/null || true
+    else
+        sshpass -p "$PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "$ssh_cmd" "mkdir -p ${REMOTE_DIR}" 2>/dev/null || true
+    fi
 }
 
 # --- Transfer function ---
 do_transfer() {
-    local filename
+    local filename ssh_cmd
     if [[ -n "${REMOTE_NAME:-}" ]]; then
         filename="$REMOTE_NAME"
     else
         filename=$(basename "$FILE")
     fi
+    ssh_cmd="${USER}@${HOST}"
 
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Transferring $FILE -> ${USER}@${HOST}:${REMOTE_DIR}${filename}"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Transferring $FILE -> ${ssh_cmd}:${REMOTE_DIR}${filename}"
 
-    if sshpass -p "$PASSWORD" scp \
-        -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null \
-        "$FILE" "${USER}@${HOST}:${REMOTE_DIR}${filename}"; then
+    local exit_code=0
+    if [[ "$AUTH_MODE" == "key" ]]; then
+        scp -i "$SSH_KEY" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "$FILE" "${ssh_cmd}:${REMOTE_DIR}${filename}" || exit_code=$?
+    else
+        sshpass -p "$PASSWORD" scp \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            "$FILE" "${ssh_cmd}:${REMOTE_DIR}${filename}" || exit_code=$?
+    fi
+
+    if [[ $exit_code -eq 0 ]]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ Transfer complete"
     else
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ Transfer FAILED"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ Transfer FAILED (exit code: $exit_code)"
     fi
 }
 

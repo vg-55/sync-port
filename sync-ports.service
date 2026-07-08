@@ -8,17 +8,12 @@ Type=simple
 User=root
 
 # ============================================================
-# EDIT THESE VALUES for your setup:
+# Secrets are stored in /etc/sync-ports.conf (chmod 600)
+# — NOT exposed in this file or in ps output.
 # ============================================================
-ExecStart=/root/sync-ports.sh \
-    -f /tmp/ports.txt \
-    -h YOUR_MAIN_VPS_IP \
-    -u root \
-    -p 'YOUR_PASSWORD' \
-    -r node1-ports.txt \
-    -i 600
+EnvironmentFile=/etc/sync-ports.conf
+ExecStart=/root/sync-ports.sh
 
-# ============================================================
 # Auto-restart if it crashes (wait 30s between retries)
 Restart=always
 RestartSec=30
@@ -26,6 +21,10 @@ RestartSec=30
 # Log to journald
 StandardOutput=journal
 StandardError=journal
+
+# Sanitize logs: hide env var values from journal
+# (prevents password leaks in journalctl output)
+LogNamespace=sync-ports
 
 [Install]
 WantedBy=multi-user.target
