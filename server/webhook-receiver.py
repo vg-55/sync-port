@@ -113,10 +113,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
         print(f"[{ts}] {msg}", flush=True)
 
     def _parse_multipart(self, content_type):
-        """Minimal multipart parser — no external deps."""
-        import email.parser
+        """Simple, robust multipart parser — no external deps.
 
-        # Extract boundary
+        Parses multipart/form-data by splitting on the boundary string.
+        Works correctly with curl, wget, browsers, and sync-ports.sh.
+        """
+        # Extract boundary from Content-Type header
         boundary = None
         for part in content_type.split(";"):
             part = part.strip()
@@ -126,36 +128,64 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if not boundary:
             raise ValueError("No boundary in Content-Type")
 
-        # Read body
+        # Read the full raw body
         content_length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(content_length)
 
-        # Create MIME message
-        msg = email.parser.BytesParser().parsebytes(
-            b"Content-Type: multipart/form-data; boundary=" + boundary.encode() + b"\r\n\r\n" + raw
-        )
+        # The actual boundary delimiter in the body is: --boundary
+        delim = ("--" + boundary).encode()
+        delim_end = ("--" + boundary + "--").encode()
 
         fields = {}
-        for part in msg.walk():
-            if part.get_content_maintype() == "multipart":
+
+        # Split the body by the delimiter
+        parts = raw.split(delim)
+        for part in parts:
+            if not part or part == b"--\r\n" or part == b"--":
                 continue
-            disp = part.get_content_disposition() or ""
+
+            # Strip leading \r\n after the delimiter
+            if part.startswith(b"\r\n"):
+                part = part[2:]
+
+            # Find the end of headers (double CRLF or double LF)
+            header_end = part.find(b"\r\n\r\n")
+            if header_end == -1:
+                header_end = part.find(b"\n\n")
+                if header_end != -1:
+                    header_end += 2  # account for \n\n vs the \r at end
+            if header_end == -1:
+                continue
+
+            headers_raw = part[:header_end].decode("utf-8", errors="replace")
+            # Body starts after double CRLF (4 bytes) or double LF (2 bytes)
+            body = part[header_end + 4:] if part[header_end:header_end+2] == b"\r\n" else part[header_end + 2:]
+
+            # Remove trailing \r\n before the next boundary
+            if body.endswith(b"\r\n"):
+                body = body[:-2]
+            elif body.endswith(b"\n"):
+                body = body[:-1]
+
+            # Parse Content-Disposition header to get name + filename
             name = None
-            for param in disp.split(";"):
-                param = param.strip()
-                if param.startswith("name="):
-                    name = param.split("=", 1)[1].strip('"\'')
-                elif param.startswith("filename="):
-                    fname = param.split("=", 1)[1].strip('"\'')
-                    if fname:
-                        name = name or "file"
-                        fields["_filename"] = fname
-            if name:
-                payload = part.get_payload(decode=True)
-                if payload is not None:
-                    fields[name] = payload
-                else:
-                    fields[name] = b""
+            filename = None
+            for line in headers_raw.split("\r\n"):
+                line_lower = line.lower()
+                if line_lower.startswith("content-disposition:"):
+                    line = line.split(":", 1)[1] if ":" in line else line
+                    for param in line.split(";"):
+                        param = param.strip()
+                        if param.startswith("name="):
+                            name = param.split("=", 1)[1].strip('"\'')
+                        elif param.startswith("filename="):
+                            filename = param.split("=", 1)[1].strip('"\'')
+
+            if name and body:
+                fields[name] = body
+                if filename:
+                    fields["_filename"] = filename
+
         return fields
 
     # Suppress default request logging
