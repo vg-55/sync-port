@@ -1,0 +1,31 @@
+[Unit]
+Description=Sync port scan results to main VPS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+
+# ============================================================
+# EDIT THESE VALUES for your setup:
+# ============================================================
+ExecStart=/root/sync-ports.sh \
+    -f /tmp/ports.txt \
+    -h YOUR_MAIN_VPS_IP \
+    -u root \
+    -p 'YOUR_PASSWORD' \
+    -r node1-ports.txt \
+    -i 600
+
+# ============================================================
+# Auto-restart if it crashes (wait 30s between retries)
+Restart=always
+RestartSec=30
+
+# Log to journald
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

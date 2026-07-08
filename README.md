@@ -47,11 +47,62 @@ chmod +x sync-ports.sh
 ./sync-ports.sh -f /tmp/ports.txt -h 10.0.0.5 -u root -p 'pass' -1
 ```
 
-## Run in Background
+## Run as a Background Service (survives SSH disconnect & reboot)
+
+You can't keep an SSH terminal open forever. Here are 3 ways to keep the script running permanently:
+
+---
+
+### Method 1: `nohup` + `disown` (quick, survives logout only)
 
 ```bash
-nohup ./sync-ports.sh -f /tmp/ports.txt -h 10.0.0.1 -u root -p 'pass' > sync.log 2>&1 &
+nohup ./sync-ports.sh -f /tmp/ports.txt -h 10.0.0.1 -u root -p 'pass' -r node1-ports.txt > sync.log 2>&1 &
+disown
 ```
+
+⚠️ Won't survive a reboot — you'll need to restart it manually.
+
+---
+
+### Method 2: `screen` (survives logout, reattachable)
+
+```bash
+# Start a named screen session
+screen -dmS sync-ports ./sync-ports.sh -f /tmp/ports.txt -h 10.0.0.1 -u root -p 'pass' -r node1-ports.txt
+
+# Reattach to see logs
+screen -r sync-ports
+
+# Detach with: Ctrl+A, then D
+```
+
+⚠️ Also won't survive a reboot.
+
+---
+
+### Method 3: `systemd` (✅ survives logout, reboot, crashes — best option)
+
+```bash
+# 1. Download the systemd service template
+wget -O /etc/systemd/system/sync-ports.service https://raw.githubusercontent.com/vg-55/sync-port/main/sync-ports.service
+
+# 2. Edit it with your actual values
+sudo nano /etc/systemd/system/sync-ports.service
+#   Change: -f /tmp/ports.txt -h YOUR_VPS_IP -u YOUR_USER -p 'YOUR_PASS' -r node1-ports.txt
+#   Change: -i 600 to whatever interval you want
+
+# 3. Enable & start (auto-starts on boot!)
+sudo systemctl daemon-reload
+sudo systemctl enable sync-ports
+sudo systemctl start sync-ports
+
+# 4. Check status / logs
+sudo systemctl status sync-ports
+sudo journalctl -u sync-ports -f        # live logs
+sudo journalctl -u sync-ports -n 50     # last 50 lines
+```
+
+---
 
 ## Deploy to a Node (one-liner)
 
