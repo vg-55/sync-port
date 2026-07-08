@@ -178,6 +178,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
         delim_end = ("--" + boundary + "--").encode()
         file_sz = os.path.getsize(path)
         remote_name = None
+        file_start = None
+        file_end = None
 
         with open(path, "rb") as f:
 
@@ -213,7 +215,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 # parse Content-Disposition
                 is_file = False
                 field_name = None
-                filename = None
+                part_filename = None
                 for hline in headers_raw.split("\r\n"):
                     lo = hline.lower()
                     if lo.startswith("content-disposition:"):
@@ -226,7 +228,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                                 fn = p.split("=", 1)[1].strip('"\'')
                                 if fn:
                                     is_file = True
-                                    filename = fn
+                                    part_filename = fn
 
                 if not field_name:
                     break
@@ -253,8 +255,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
                             part_end -= 1
 
                 # ---- act on the part ----
-                if is_file:
-                    return (filename or field_name, body_pos, part_end)
+                if is_file and file_start is None:
+                    # Record file offsets (but keep scanning for the 'name' field)
+                    file_start = body_pos
+                    file_end = part_end
+                    # fallback name until we find the 'name' form field
+                    if not remote_name:
+                        remote_name = part_filename or field_name
 
                 if field_name == "name" and not is_file:
                     f.seek(body_pos)
@@ -263,6 +270,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         .decode("utf-8", errors="replace")
                         .strip()
                     )
+
+                # If we have both the file AND the desired name, done
+                if file_start is not None and remote_name and remote_name != (part_filename or field_name or ""):
+                    # We have the name from the 'name' form field; return now
+                    return (remote_name, file_start, file_end)
 
                 # advance to after this boundary (or stop)
                 if nb == -1:
@@ -280,7 +292,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 elif after.startswith(b"\n"):
                     pos += 1
 
-        return (remote_name, 0, 0)
+        return (remote_name, file_start or 0, file_end or 0)
 
     # ---- helpers ----
 
