@@ -66,9 +66,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "Missing 'file' field."})
             return
 
-        filename = form.get("name", form.get("file", ["unnamed.txt"])[0] if isinstance(form.get("name"), list) else "unnamed.txt")
-        if isinstance(filename, list):
-            filename = filename[0]
+        filename = form.get("name") or form.get("_filename") or "unnamed.txt"
 
         filedata = form["file"]
         if isinstance(filedata, list):
@@ -182,9 +180,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
                             filename = param.split("=", 1)[1].strip('"\'')
 
             if name and body:
-                fields[name] = body
+                # If the part has a filename, it's a file upload → keep as bytes.
+                # Otherwise it's a text form field → decode to string.
                 if filename:
+                    fields[name] = body
                     fields["_filename"] = filename
+                else:
+                    fields[name] = body.decode("utf-8", errors="replace")
 
         return fields
 
