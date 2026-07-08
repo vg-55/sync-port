@@ -52,3 +52,15 @@ chmod +x sync-ports.sh
 ```bash
 nohup ./sync-ports.sh -f /tmp/ports.txt -h 10.0.0.1 -u root -p 'pass' > sync.log 2>&1 &
 ```
+
+## Deploy to a Node (one-liner)
+
+No need to clone the whole repo — just grab the script:
+
+```bash
+# Download + make executable in one go
+wget -O sync-ports.sh https://raw.githubusercontent.com/vg-55/sync-port/main/sync-ports.sh && chmod +x sync-ports.sh
+
+# Or with curl
+curl -sSL -o sync-ports.sh https://raw.githubusercontent.com/vg-55/sync-port/main/sync-ports.sh && chmod +x sync-ports.sh
+```
