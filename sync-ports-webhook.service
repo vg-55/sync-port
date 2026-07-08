@@ -1,0 +1,27 @@
+[Unit]
+Description=Sync ports webhook receiver (write-only file upload)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+
+# ============================================================
+# EDIT THE TOKEN and optionally the port/dir below
+# ============================================================
+ExecStart=/usr/bin/python3 /root/webhook-receiver.py \
+    --token YOUR_SECRET_TOKEN \
+    --port 9090 \
+    --dir /var/scans
+
+# Auto-restart if it crashes
+Restart=always
+RestartSec=10
+
+# Log to journald
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
